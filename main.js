@@ -1,8 +1,16 @@
 // main.js
-const { app, BrowserWindow, ipcMain, session, dialog, globalShortcut } = require('electron');
-const fs = require('fs');
-const path = require('path');
-const pkg = require('./package.json');
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  session,
+  dialog,
+  globalShortcut,
+  screen,
+} = require("electron");
+const fs = require("fs");
+const path = require("path");
+const pkg = require("./package.json");
 
 let launcherWin = null;
 
@@ -10,45 +18,17 @@ let launcherWin = null;
 // Map<string, Set<BrowserWindow>>
 const gameWindows = new Map();
 
-const USER_DATA = app.getPath('userData');
-const PROFILES_FILE = path.join(USER_DATA, 'profiles.json');
-const PENDING_FILE = path.join(USER_DATA, 'pending_deletes.json');
-const TRASH_DIR = path.join(USER_DATA, 'Trash');
-
-// Jobs
-const JOBS = [
-  'Vagrant',
-  'Acrobat',
-  'Jester',
-  'Ranger',
-  'Harlequin',
-  'Crackshooter',
-  'Assist',
-  'Ringmaster',
-  'Billposter',
-  'Seraph',
-  'Force Master',
-  'Magician',
-  'Psykeeper',
-  'Elementor',
-  'Mentalist',
-  'Arcanist',
-  'Mercenary',
-  'Blade',
-  'Knight',
-  'Slayer',
-  'Templar'
-];
-const JOBS_SET = new Set(JOBS);
-const DEFAULT_JOB = 'Vagrant';
-const JOB_OPTIONS_HTML = JOBS.map(j => `<option value="${j}">${j}</option>`).join('');
+const USER_DATA = app.getPath("userData");
+const PROFILES_FILE = path.join(USER_DATA, "profiles.json");
+const PENDING_FILE = path.join(USER_DATA, "pending_deletes.json");
+const TRASH_DIR = path.join(USER_DATA, "Trash");
 
 // Single-instance lock
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on("second-instance", () => {
     ensureLauncher();
     if (launcherWin && !launcherWin.isDestroyed()) {
       if (launcherWin.isMinimized()) launcherWin.restore();
@@ -58,14 +38,42 @@ if (!gotTheLock) {
   });
 }
 
+// Server options (Live only)
+const SERVERS = {
+  live: {
+    label: "Live Server",
+    url: "https://universe.flyff.com/play",
+    dev: false,
+  },
+};
+
+// Performance tweaks
+app.commandLine.appendSwitch("force_high_performance_gpu");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+app.commandLine.appendSwitch("enable-gpu-rasterization");
+app.commandLine.appendSwitch("enable-zero-copy");
+app.commandLine.appendSwitch("enable-oop-rasterization");
+
 // ---------- Profiles storage helpers ----------
 
-/** @typedef {{name:string, job:string, savedAuth?:Record<string,{u:string,p:string}>, partition:string, frame?:boolean, isClone?:boolean}} Profile */
+/**
+ * @typedef {{
+ *  name:string,
+ *  server:keyof SERVERS,
+ *  savedAuth?:Record<string,{u:string,p:string}>,
+ *  partition:string,
+ *  frame?:boolean,
+ *  isClone?:boolean,
+ *  winBounds?:{ width:number, height:number, x?:number, y?:number, maximized?:boolean, fullscreen?:boolean }
+ * }} Profile
+ */
 
 function readRawProfiles() {
   try {
     if (!fs.existsSync(PROFILES_FILE)) return [];
-    const raw = fs.readFileSync(PROFILES_FILE, 'utf8');
+    const raw = fs.readFileSync(PROFILES_FILE, "utf8");
     return JSON.parse(raw);
   } catch {
     return [];
@@ -73,15 +81,15 @@ function readRawProfiles() {
 }
 
 function safeProfileName(name) {
-  return String(name || '')
+  return String(name || "")
     .trim()
-    .replace(/\s+/g, ' ')
+    .replace(/\s+/g, " ")
     .slice(0, 40);
 }
 
 // Preferred stable partition generator (sanitized)
 function partitionFromName(name) {
-  return `persist:profile-${String(name || '').replace(/[^a-z0-9-_ ]/gi, '_')}`;
+  return `persist:profile-${String(name || "").replace(/[^a-z0-9-_ ]/gi, "_")}`;
 }
 
 /**
@@ -89,21 +97,22 @@ function partitionFromName(name) {
  * NOTE: These are STRICT variants of the SAME name (sanitized/encoded/raw), not "Copy" suffixes.
  */
 function partitionCandidatesFromName(name) {
-  const raw = String(name || '');
-  const sanitized = `profile-${raw.replace(/[^a-z0-9-_ ]/gi, '_')}`;
-  const encoded = `profile-${encodeURIComponent(raw)}`;
+  const raw = String(name || "");
+  const sanitized = `profile-${raw.replace(/[^a-z0-9-_ ]/gi, "_")}`;
+  theEncoded = encodeURIComponent(raw);
+  const encoded = `profile-${theEncoded}`;
   const rawDirect = `profile-${raw}`;
   const extras = [];
-  if (!sanitized.endsWith('_')) extras.push(sanitized + '_');
-  if (!encoded.endsWith('_')) extras.push(encoded + '_');
-  if (!rawDirect.endsWith('_')) extras.push(rawDirect + '_');
+  if (!sanitized.endsWith("_")) extras.push(sanitized + "_");
+  if (!encoded.endsWith("_")) extras.push(encoded + "_");
+  if (!rawDirect.endsWith("_")) extras.push(rawDirect + "_");
   const uniq = new Set([sanitized, encoded, rawDirect, ...extras]);
   return Array.from(uniq);
 }
 
 function partitionDirExists(dirName) {
   try {
-    const p = path.join(USER_DATA, 'Partitions', dirName);
+    const p = path.join(USER_DATA, "Partitions", dirName);
     const st = fs.statSync(p);
     return st && st.isDirectory();
   } catch {
@@ -122,34 +131,65 @@ function resolveLegacyPartition(name) {
 }
 
 function partitionForProfile(p) {
-  if (p && typeof p.partition === 'string' && p.partition) return p.partition;
-  const legacy = resolveLegacyPartition(p?.name || '');
+  if (p && typeof p.partition === "string" && p.partition) return p.partition;
+  const legacy = resolveLegacyPartition(p?.name || "");
   if (legacy) return legacy;
-  return partitionFromName(p?.name || '');
+  return partitionFromName(p?.name || "");
 }
 
 function inferIsCloneFromName(name) {
-  return /\bCopy(?:\s+\d+)?$/i.test(String(name || '').trim());
+  return /\bCopy(?:\s+\d+)?$/i.test(String(name || "").trim());
 }
 
 function normalizeProfiles(arr) {
   if (!Array.isArray(arr)) return [];
   return arr
     .filter(Boolean)
-    .map(item => {
-      if (typeof item === 'string') {
+    .map((item) => {
+      const normWinBounds = (wb) => {
+        if (!wb || typeof wb !== "object") return undefined;
+        const width = Math.max(300, Number(wb.width) || 0);
+        const height = Math.max(200, Number(wb.height) || 0);
+        const maximized = !!wb.maximized;
+        const fullscreen = !!wb.fullscreen;
+        const x =
+          wb.x === 0 || Number.isFinite(wb.x) ? Number(wb.x) : undefined;
+        const y =
+          wb.y === 0 || Number.isFinite(wb.y) ? Number(wb.y) : undefined;
+        return { width, height, x, y, maximized, fullscreen };
+      };
+
+      if (typeof item === "string") {
         const name = safeProfileName(item);
-        return { name, job: DEFAULT_JOB, savedAuth: {}, partition: partitionForProfile({ name }), frame: false, isClone: inferIsCloneFromName(name) };
+        return {
+          name,
+          server: "live",
+          savedAuth: {},
+          partition: partitionForProfile({ name }),
+          frame: false,
+          isClone: inferIsCloneFromName(name),
+          // winBounds undefined until user resizes
+        };
       }
       const name = safeProfileName(item?.name);
       if (!name) return null;
-      const jobRaw = (item?.job || '').trim();
-      const job = JOBS_SET.has(jobRaw) ? jobRaw : DEFAULT_JOB;
-      const savedAuth = (item?.savedAuth && typeof item.savedAuth === 'object') ? item.savedAuth : {};
-      const partition = (typeof item?.partition === 'string' && item.partition) ? item.partition : partitionForProfile({ name });
+      const server =
+        item?.server && SERVERS[item.server] ? item.server : "live";
+      const savedAuth =
+        item?.savedAuth && typeof item.savedAuth === "object"
+          ? item.savedAuth
+          : {};
+      const partition =
+        typeof item?.partition === "string" && item.partition
+          ? item.partition
+          : partitionForProfile({ name });
       const frame = !!item?.frame;
-      const isClone = (typeof item?.isClone === 'boolean') ? item.isClone : inferIsCloneFromName(name);
-      return { name, job, savedAuth, partition, frame, isClone };
+      const isClone =
+        typeof item?.isClone === "boolean"
+          ? item.isClone
+          : inferIsCloneFromName(name);
+      const winBounds = normWinBounds(item?.winBounds);
+      return { name, server, savedAuth, partition, frame, isClone, winBounds };
     })
     .filter(Boolean);
 }
@@ -162,19 +202,19 @@ function readProfiles() {
 function writeProfiles(list) {
   try {
     fs.mkdirSync(path.dirname(PROFILES_FILE), { recursive: true });
-    fs.writeFileSync(PROFILES_FILE, JSON.stringify(list, null, 2), 'utf8');
+    fs.writeFileSync(PROFILES_FILE, JSON.stringify(list, null, 2), "utf8");
   } catch (e) {
-    console.error('Failed to save profiles:', e);
+    console.error("Failed to save profiles:", e);
   }
 }
 
 function getProfileIndex(list, name) {
-  return list.findIndex(p => p.name === name);
+  return list.findIndex((p) => p.name === name);
 }
 
 function getProfileByName(name) {
   const list = readProfiles();
-  return list.find(p => p.name === name) || null;
+  return list.find((p) => p.name === name) || null;
 }
 
 function saveProfile(updated) {
@@ -183,6 +223,19 @@ function saveProfile(updated) {
   if (idx === -1) return false;
   list[idx] = updated;
   writeProfiles(list);
+  return true;
+}
+
+// Patch helper (partial update + notify)
+function patchProfile(name, patch) {
+  const list = readProfiles();
+  const idx = getProfileIndex(list, name);
+  if (idx === -1) return false;
+  list[idx] = { ...list[idx], ...patch };
+  writeProfiles(list);
+  if (launcherWin && !launcherWin.isDestroyed()) {
+    launcherWin.webContents.send("profiles:updated");
+  }
   return true;
 }
 
@@ -196,7 +249,10 @@ function getActiveProfileNames() {
 
 function broadcastActiveUpdate() {
   if (launcherWin && !launcherWin.isDestroyed()) {
-    launcherWin.webContents.send('profiles:active-updated', getActiveProfileNames());
+    launcherWin.webContents.send(
+      "profiles:active-updated",
+      getActiveProfileNames()
+    );
   }
   updateGlobalShortcut();
 }
@@ -218,9 +274,9 @@ function toggleLauncherVisibility() {
 
 /** Only enable Ctrl+Shift+L when there is at least one active session */
 function updateGlobalShortcut() {
-  globalShortcut.unregister('CommandOrControl+Shift+L');
+  globalShortcut.unregister("CommandOrControl+Shift+L");
   if (getActiveProfileNames().length > 0) {
-    globalShortcut.register('CommandOrControl+Shift+L', () => {
+    globalShortcut.register("CommandOrControl+Shift+L", () => {
       toggleLauncherVisibility();
     });
   }
@@ -229,14 +285,14 @@ function updateGlobalShortcut() {
 // ---------- Partition dir + Retriable delete helpers ----------
 
 function getPartitionDir(partition) {
-  const name = String(partition || '').replace(/^persist:/, '');
-  return path.join(USER_DATA, 'Partitions', name);
+  const name = String(partition || "").replace(/^persist:/, "");
+  return path.join(USER_DATA, "Partitions", name);
 }
 
 function getLegacyPartitionDirsForProfile(p) {
-  const name = p?.name || '';
+  const name = p?.name || "";
   const cands = partitionCandidatesFromName(name);
-  return cands.map(dir => path.join(USER_DATA, 'Partitions', dir));
+  return cands.map((dir) => path.join(USER_DATA, "Partitions", dir));
 }
 
 /**
@@ -245,18 +301,20 @@ function getLegacyPartitionDirsForProfile(p) {
  * We DO NOT derive from display name here to avoid touching other profiles.
  */
 function dirBasesFromPartition(partition) {
-  const base = String(partition || '').replace(/^persist:/, ''); // e.g. profile-Test_Copy
+  const base = String(partition || "").replace(/^persist:/, ""); // e.g. profile-Test_Copy
   const bases = new Set([base]);
 
   // Try decode -> encode roundtrip
   let decoded = base;
-  try { decoded = decodeURIComponent(base); } catch {}
+  try {
+    decoded = decodeURIComponent(base);
+  } catch {}
   const encoded = encodeURIComponent(decoded);
   bases.add(decoded);
   bases.add(encoded);
 
   // Underscore-sanitized from decoded human form
-  const underscored = decoded.replace(/[^a-z0-9-_ ]/gi, '_');
+  const underscored = decoded.replace(/[^a-z0-9-_ ]/gi, "_");
   bases.add(underscored);
 
   // Ensure prefix "profile-" remains; if not, add prefixed versions
@@ -266,7 +324,7 @@ function dirBasesFromPartition(partition) {
 
   // Add optional trailing underscore variants
   for (const b of Array.from(bases)) {
-    if (!b.endsWith('_')) bases.add(b + '_');
+    if (!b.endsWith("_")) bases.add(b + "_");
   }
 
   return Array.from(bases);
@@ -275,7 +333,7 @@ function dirBasesFromPartition(partition) {
 function readPendingDeletes() {
   try {
     if (!fs.existsSync(PENDING_FILE)) return [];
-    const raw = fs.readFileSync(PENDING_FILE, 'utf8');
+    const raw = fs.readFileSync(PENDING_FILE, "utf8");
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr : [];
   } catch {
@@ -286,9 +344,9 @@ function readPendingDeletes() {
 function writePendingDeletes(list) {
   try {
     fs.mkdirSync(path.dirname(PENDING_FILE), { recursive: true });
-    fs.writeFileSync(PENDING_FILE, JSON.stringify(list, null, 2), 'utf8');
+    fs.writeFileSync(PENDING_FILE, JSON.stringify(list, null, 2), "utf8");
   } catch (e) {
-    console.error('Failed to write pending deletes:', e);
+    console.error("Failed to write pending deletes:", e);
   }
 }
 
@@ -306,8 +364,11 @@ async function tryRmDirRecursive(dir, attempts = 4, delayMs = 250) {
       return;
     } catch (e) {
       lastErr = e;
-      if (e && (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'ENOENT')) {
-        await new Promise(r => setTimeout(r, delayMs * Math.pow(2, i)));
+      if (
+        e &&
+        (e.code === "EBUSY" || e.code === "EPERM" || e.code === "ENOENT")
+      ) {
+        await new Promise((r) => setTimeout(r, delayMs * Math.pow(2, i)));
         continue;
       }
       throw e;
@@ -332,12 +393,16 @@ async function safeRemovePartitionDirByPath(dir) {
         return true;
       } catch (e2) {
         enqueuePendingDelete(tmp);
-        console.error('Queued for later deletion:', tmp, e2);
+        console.error("Queued for later deletion:", tmp, e2);
         return false;
       }
     } catch (eRename) {
       enqueuePendingDelete(dir);
-      console.error('Failed renaming partition dir, queued for later deletion:', dir, eRename);
+      console.error(
+        "Failed renaming partition dir, queued for later deletion:",
+        dir,
+        eRename
+      );
       return false;
     }
   }
@@ -350,7 +415,9 @@ async function safeRemovePartitionDir(partition, profileObjForLegacySweep) {
 
   // STRICT legacy dirs for current display name (sanitized/encoded/raw)
   if (profileObjForLegacySweep) {
-    const legacyDirs = getLegacyPartitionDirsForProfile(profileObjForLegacySweep);
+    const legacyDirs = getLegacyPartitionDirsForProfile(
+      profileObjForLegacySweep
+    );
     for (const dir of legacyDirs) {
       if (dir === primary) continue;
       try {
@@ -365,7 +432,7 @@ async function safeRemovePartitionDir(partition, profileObjForLegacySweep) {
 
   // Partition-derived variants (covers renames where partition stayed on an old naming scheme)
   try {
-    const partsRoot = path.join(USER_DATA, 'Partitions');
+    const partsRoot = path.join(USER_DATA, "Partitions");
     const candidates = dirBasesFromPartition(partition);
     for (const base of candidates) {
       const full = path.join(partsRoot, base);
@@ -379,7 +446,7 @@ async function safeRemovePartitionDir(partition, profileObjForLegacySweep) {
       } catch {}
     }
   } catch (e) {
-    console.error('Partition-variant sweep failed:', e);
+    console.error("Partition-variant sweep failed:", e);
   }
 
   return ok;
@@ -408,22 +475,20 @@ function createLauncher() {
     resizable: false,
     autoHideMenuBar: true,
     show: false,
-    icon: 'icon.png',
+    icon: "icon.png",
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
-      backgroundThrottling: false
-    }
+      backgroundThrottling: false,
+    },
   });
 
-  launcherWin.on('close', (e) => {
+  launcherWin.on("close", (e) => {
     if (getActiveProfileNames().length > 0) {
       e.preventDefault();
       launcherWin.hide();
     }
   });
-
-  const jobFilterOptions = `<option value="all">All Jobs</option>${JOB_OPTIONS_HTML}`;
 
   const html = `
   <!doctype html>
@@ -574,7 +639,6 @@ function createLauncher() {
           <div class="card-h" style="margin-top:10px">
             <button id="createBtn" class="btn primary" style="max-height:34px">Create Profile</button>
             <input id="searchInput" type="text" placeholder="Search profile name..." style="max-width:240px">
-            <select id="jobFilter" style="max-width:180px;height:34px;padding:0 8px;">${jobFilterOptions}</select>
             <span class="muted" id="count">0</span>
           </div>
 
@@ -582,7 +646,7 @@ function createLauncher() {
             <div class="sec-title">Profile Name</div>
             <div class="grid cols-2">
               <input id="createName" type="text" placeholder="Profile name (e.g. Main, Alt, Archer SEA)">
-              <select id="createJob">${JOB_OPTIONS_HTML}</select>
+              <div></div>
             </div>
             <div class="grid cols-2" style="margin-top:8px">
               <button id="createAdd" class="btn primary">Add</button>
@@ -606,7 +670,6 @@ function createLauncher() {
       let manageOpen = null;
       let actives = [];
       let filterText = '';
-      let jobFilter = 'all';
       let draggingName = null;
 
       const toastsEl = document.getElementById('toasts');
@@ -626,12 +689,10 @@ function createLauncher() {
       const createBtn = document.getElementById('createBtn');
       const createForm = document.getElementById('createForm');
       const createName = document.getElementById('createName');
-      const createJob = document.getElementById('createJob');
       const createAdd = document.getElementById('createAdd');
       const createCancel = document.getElementById('createCancel');
 
       const searchInput = document.getElementById('searchInput');
-      const jobFilterEl = document.getElementById('jobFilter');
 
       createBtn.onclick = () => { 
         createForm.classList.toggle('show'); 
@@ -647,19 +708,13 @@ function createLauncher() {
         render();
       });
 
-      jobFilterEl.addEventListener('change', () => {
-        jobFilter = (jobFilterEl.value || 'all').trim();
-        render();
-      });
-
       function isActive(name){ return actives.includes(name); }
       function anySessionOpen(){ return (actives && actives.length > 0); }
 
       async function addProfile() {
         const val = (createName.value || '').trim();
-        const job = (createJob.value || '').trim();
         if (!val) return alert('Enter a profile name');
-        const res = await ipcRenderer.invoke('profiles:add', { name: val, job });
+        const res = await ipcRenderer.invoke('profiles:add', { name: val });
         if (!res.ok) return alert(res.error || 'Failed to add profile');
         createName.value = '';
         createForm.classList.remove('show');
@@ -675,13 +730,13 @@ function createLauncher() {
       const dropAbove = document.getElementById('dropAbove');
       const dropBelow = document.getElementById('dropBelow');
 
+      function tagFor(){ return 'Live Server'; }
+
       function applyFilters(list){
         const ft = filterText;
-        const jf = jobFilter;
         return list.filter(p => {
           const byText = !ft || (p.name || '').toLowerCase().includes(ft);
-          const byJob = (jf === 'all') || ((p.job || '').trim() === jf);
-          return byText && byJob;
+          return byText;
         });
       }
 
@@ -766,9 +821,17 @@ function createLauncher() {
 
           const nm = document.createElement('div');
           nm.className = 'name';
-          const job = (p.job || '').trim();
-          const jobTag = job ? ' <span class="tag">'+job+'</span>' : '';
-          nm.innerHTML = name + jobTag;
+          nm.innerHTML =
+            name +
+            ' <span class="tag">' + tagFor() + '</span>' +
+            (p.winBounds
+              ? ' <span class="tag">' +
+                  p.winBounds.width + '×' + p.winBounds.height +
+                  ((p.winBounds.x === 0 || Number.isFinite(p.winBounds.x)) && (p.winBounds.y === 0 || Number.isFinite(p.winBounds.y)) ? ' @ ' + p.winBounds.x + ',' + p.winBounds.y : '') +
+                  (p.winBounds.maximized ? ' M' : '') +
+                  (p.winBounds.fullscreen ? ' F' : '') +
+                '</span>'
+              : '');
 
           leftWrap.appendChild(dragHandle);
           leftWrap.appendChild(nm);
@@ -828,11 +891,8 @@ function createLauncher() {
           renameInput.placeholder = 'Rename profile';
           renameInput.value = name;
           renameWrap.appendChild(renameInput);
-
-          const jobSel = document.createElement('select');
-          jobSel.innerHTML = \`${JOB_OPTIONS_HTML}\`;
-          jobSel.value = p.job || '${DEFAULT_JOB}';
-          renameWrap.appendChild(jobSel);
+          const spacer = document.createElement('div');
+          renameWrap.appendChild(spacer);
 
           const saveRow = document.createElement('div');
           saveRow.className = 'grid cols-2';
@@ -841,9 +901,8 @@ function createLauncher() {
           saveBtn.textContent = 'Save Changes';
           saveBtn.onclick = async () => {
             const newName = (renameInput.value || '').trim();
-            const newJob = (jobSel.value || '').trim();
             if (!newName) return alert('Enter a valid name');
-            const res = await ipcRenderer.invoke('profiles:update', { from: name, to: newName, job: newJob });
+            const res = await ipcRenderer.invoke('profiles:update', { from: name, to: newName });
             if (!res.ok) return alert(res.error || 'Failed to update');
             manageOpen = newName;
             await refresh();
@@ -854,7 +913,7 @@ function createLauncher() {
           frameBtn.className = 'btn';
           frameBtn.textContent = p.frame ? 'Disable Window Frame' : 'Enable Window Frame';
           frameBtn.onclick = async () => {
-            const res = await ipcRenderer.invoke('profiles:update', { from: name, to: name, frame: !p.frame, job: jobSel.value });
+            const res = await ipcRenderer.invoke('profiles:update', { from: name, to: name, frame: !p.frame });
             if (!res.ok) return alert(res.error || 'Failed to update');
             await refresh();
             showToast('Window frame ' + (!p.frame ? 'enabled' : 'disabled') + '.');
@@ -864,6 +923,44 @@ function createLauncher() {
           saveRow.appendChild(frameBtn);
           m.appendChild(renameWrap);
           m.appendChild(saveRow);
+
+          // --- Bounds info and reset ---
+          const boundsInfo = document.createElement('div');
+          boundsInfo.className = 'sec-title';
+          if (p.winBounds) {
+            const wb = p.winBounds;
+            boundsInfo.textContent =
+              'Saved: ' +
+              wb.width + '×' + wb.height +
+              ((wb.x === 0 || Number.isFinite(wb.x)) && (wb.y === 0 || Number.isFinite(wb.y)) ? ' at ' + wb.x + ',' + wb.y : '') +
+              (wb.maximized ? ' (maximized)' : '') +
+              (wb.fullscreen ? ' (fullscreen)' : '');
+          } else {
+            boundsInfo.textContent = 'No saved window size/position yet. It will be saved when you move/resize the game window.';
+          }
+          m.appendChild(boundsInfo);
+
+          const boundsRow = document.createElement('div');
+          boundsRow.className = 'grid cols-2';
+
+          const resetBoundsBtn = document.createElement('button');
+          resetBoundsBtn.className = 'btn';
+          resetBoundsBtn.textContent = 'Reset Saved Window Size/Position';
+          resetBoundsBtn.onclick = async () => {
+            const res = await ipcRenderer.invoke('profiles:clear-bounds', name);
+            if (!res.ok) return alert(res.error || 'Failed to reset');
+            await refresh();
+            showToast('Saved window size/position cleared.');
+          };
+
+          const hint = document.createElement('button');
+          hint.className = 'btn';
+          hint.textContent = 'Tip: move/resize or maximize the game window — it auto-saves';
+          hint.disabled = true;
+
+          boundsRow.appendChild(resetBoundsBtn);
+          boundsRow.appendChild(hint);
+          m.appendChild(boundsRow);
 
           const authRow = document.createElement('div');
           authRow.className = 'grid cols-2';
@@ -961,9 +1058,13 @@ function createLauncher() {
   </body>
   </html>`;
 
-  launcherWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-  launcherWin.once('ready-to-show', () => launcherWin.show());
-  launcherWin.on('closed', () => { launcherWin = null; });
+  launcherWin.loadURL(
+    "data:text/html;charset=utf-8," + encodeURIComponent(html)
+  );
+  launcherWin.once("ready-to-show", () => launcherWin.show());
+  launcherWin.on("closed", () => {
+    launcherWin = null;
+  });
 }
 
 // ---------- HTTP Auth Modal ----------
@@ -977,11 +1078,11 @@ function promptHTTPAuth(parent, host) {
       height: 380,
       resizable: false,
       autoHideMenuBar: true,
-      title: 'Authentication Required',
+      title: "Authentication Required",
       webPreferences: {
         nodeIntegration: true,
-        contextIsolation: false
-      }
+        contextIsolation: false,
+      },
     });
 
     const html = `
@@ -1035,21 +1136,69 @@ function promptHTTPAuth(parent, host) {
       </script>
     </body>
     </html>`;
-    modal.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    modal.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
 
     const cleanup = () => {
-      try { if (!modal.isDestroyed()) modal.close(); } catch {}
-      ipcMain.removeAllListeners('auth:submit');
-      ipcMain.removeAllListeners('auth:cancel');
+      try {
+        if (!modal.isDestroyed()) modal.close();
+      } catch {}
+      ipcMain.removeAllListeners("auth:submit");
+      ipcMain.removeAllListeners("auth:cancel");
     };
 
-    ipcMain.once('auth:submit', (_e, data) => { cleanup(); resolve({ ok: true, ...data }); });
-    ipcMain.once('auth:cancel', () => { cleanup(); resolve({ ok: false }); });
+    ipcMain.once("auth:submit", (_e, data) => {
+      cleanup();
+      resolve({ ok: true, ...data });
+    });
+    ipcMain.once("auth:cancel", () => {
+      cleanup();
+      resolve({ ok: false });
+    });
 
-    modal.on('closed', () => {
+    modal.on("closed", () => {
       resolve({ ok: false });
     });
   });
+}
+
+// ---------- Display clamping helper ----------
+function clampToVisibleDisplay(bounds) {
+  const displays = screen.getAllDisplays();
+  if (!displays || displays.length === 0) return bounds;
+  // Prefer display with max intersection
+  let best = displays[0];
+  let bestArea = -1;
+  for (const d of displays) {
+    const r = d.workArea;
+    const ix = Math.max(
+      0,
+      Math.min(bounds.x + bounds.width, r.x + r.width) - Math.max(bounds.x, r.x)
+    );
+    const iy = Math.max(
+      0,
+      Math.min(bounds.y + bounds.height, r.y + r.height) -
+        Math.max(bounds.y, r.y)
+    );
+    const area = ix * iy;
+    if (area > bestArea) {
+      bestArea = area;
+      best = d;
+    }
+  }
+  const r = best.workArea;
+  const minW = Math.min(bounds.width, r.width);
+  const minH = Math.min(bounds.height, r.height);
+  const clamped = {
+    width: Math.max(300, Math.min(bounds.width, r.width)),
+    height: Math.max(200, Math.min(bounds.height, r.height)),
+    x: Number.isFinite(bounds.x)
+      ? Math.min(Math.max(bounds.x, r.x), r.x + r.width - minW)
+      : r.x + ((r.width - minW) >> 1),
+    y: Number.isFinite(bounds.y)
+      ? Math.min(Math.max(bounds.y, r.y), r.y + r.height - minH)
+      : r.y + ((r.height - minH) >> 1),
+  };
+  return clamped;
 }
 
 // ---------- Launch Game ----------
@@ -1058,35 +1207,59 @@ function launchGameWithProfile(name) {
   const profile = getProfileByName(name);
   if (!profile) return;
   const part = partitionForProfile(profile);
-  const url = 'https://universe.flyff.com/play';
+  const server = SERVERS[profile.server] ? profile.server : "live";
+  const url = SERVERS[server].url;
+  const isDev = !!SERVERS[server].dev;
 
-  const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
+  // Use saved bounds or defaults, and keep it on-screen
+  const preferred = profile.winBounds || {};
+  const initial = clampToVisibleDisplay({
+    x: (Number.isFinite(preferred.x) ? preferred.x : undefined) ?? 0,
+    y: (Number.isFinite(preferred.y) ? preferred.y : undefined) ?? 0,
+    width: Math.max(400, preferred.width || 1200),
+    height: Math.max(300, preferred.height || 800),
+  });
+
+  const winOpts = {
+    width: initial.width,
+    height: initial.height,
     autoHideMenuBar: true,
     show: false,
     frame: !!profile.frame,
-    icon: 'icon.png',
+    icon: isDev ? "dev.png" : "icon.png",
+    backgroundColor: "#000000",
     webPreferences: {
       backgroundThrottling: false,
+      spellcheck: false,
       partition: part,
-      nativeWindowOpen: true
-    }
-  });
+      nativeWindowOpen: true,
+    },
+  };
+
+  if (Number.isFinite(preferred.x) && Number.isFinite(preferred.y)) {
+    winOpts.x = initial.x;
+    winOpts.y = initial.y;
+  }
+
+  const win = new BrowserWindow(winOpts);
+
+  // Apply saved state
+  if (preferred.maximized) win.maximize();
+  if (preferred.fullscreen) win.setFullScreen(true);
 
   win.__profileName = name;
 
-  win.on('close', async (e) => {
+  win.on("close", async (e) => {
     if (win.__confirmedClose) return;
     e.preventDefault();
     const res = await dialog.showMessageBox(win, {
-      type: 'question',
-      buttons: ['Exit Session', 'Cancel'],
+      type: "question",
+      buttons: ["Exit Session", "Cancel"],
       defaultId: 0,
       cancelId: 1,
-      title: 'Exit Session',
-      message: 'Exit this game session?',
-      detail: 'Profile: ' + (win.__profileName || name)
+      title: "Exit Session",
+      message: "Exit this game session?",
+      detail: "Profile: " + (win.__profileName || name),
     });
     if (res.response === 0) {
       win.__confirmedClose = true;
@@ -1094,9 +1267,44 @@ function launchGameWithProfile(name) {
     }
   });
 
+  // Save bounds/state on changes (debounced, save *normal* bounds when max/fullscreen)
+  const saveBoundsDebounced = (() => {
+    let t;
+    return () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        if (win.isDestroyed()) return;
+        const isMax = win.isMaximized();
+        const isFS = win.isFullScreen();
+        const b = isMax || isFS ? win.getNormalBounds() : win.getBounds();
+        const payload = {
+          winBounds: {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+            maximized: isMax,
+            fullscreen: isFS,
+          },
+        };
+        const who = win.__profileName || name;
+        patchProfile(who, payload);
+      }, 200);
+    };
+  })();
+
+  [
+    "move",
+    "resize",
+    "maximize",
+    "unmaximize",
+    "enter-full-screen",
+    "leave-full-screen",
+  ].forEach((evt) => win.on(evt, saveBoundsDebounced));
+
   win.webContents.setWindowOpenHandler(({ url }) => {
     return {
-      action: 'allow',
+      action: "allow",
       overrideBrowserWindowOptions: {
         parent: win,
         modal: false,
@@ -1106,9 +1314,9 @@ function launchGameWithProfile(name) {
         height: 700,
         webPreferences: {
           partition: part,
-          backgroundThrottling: false
-        }
-      }
+          backgroundThrottling: false,
+        },
+      },
     };
   });
 
@@ -1116,7 +1324,7 @@ function launchGameWithProfile(name) {
     if (webContents.id !== win.webContents.id) return;
     event.preventDefault();
 
-    const hostKey = (authInfo.host || '').trim() || 'server';
+    const hostKey = (authInfo.host || "").trim() || "server";
     const current = getProfileByName(win.__profileName || name);
     const saved = current?.savedAuth?.[hostKey];
 
@@ -1131,20 +1339,21 @@ function launchGameWithProfile(name) {
         const updated = getProfileByName(win.__profileName || name);
         if (updated) {
           updated.savedAuth = updated.savedAuth || {};
-          updated.savedAuth[hostKey] = { u: res.u, p: res.p || '' };
+          updated.savedAuth[hostKey] = { u: res.u, p: res.p || "" };
           saveProfile(updated);
-          if (launcherWin && !launcherWin.isDestroyed()) launcherWin.webContents.send('profiles:updated');
+          if (launcherWin && !launcherWin.isDestroyed())
+            launcherWin.webContents.send("profiles:updated");
         }
       }
-      callback(res.u, res.p || '');
+      callback(res.u, res.p || "");
     } else {
       callback();
     }
   };
-  app.on('login', onLogin);
+  app.on("login", onLogin);
 
-  win.on('closed', () => {
-    app.removeListener('login', onLogin);
+  win.on("closed", () => {
+    app.removeListener("login", onLogin);
 
     const key = win.__profileName || name;
     const s = gameWindows.get(key);
@@ -1164,9 +1373,8 @@ function launchGameWithProfile(name) {
     }
   });
 
-  win.maximize();
   win.loadURL(url);
-  win.once('ready-to-show', () => win.show());
+  win.once("ready-to-show", () => win.show());
 
   if (!gameWindows.has(name)) gameWindows.set(name, new Set());
   const set = gameWindows.get(name);
@@ -1184,17 +1392,24 @@ async function cloneCookiesBetweenPartitions(srcPartition, dstPartition) {
     const cookies = await src.cookies.get({});
     const dstExisting = await dst.cookies.get({});
     await Promise.all(
-      dstExisting.map(c =>
-        dst.cookies.remove(
-          `${c.secure ? 'https' : 'http'}://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`,
-          c.name
-        ).catch(() => {})
+      dstExisting.map((c) =>
+        dst.cookies
+          .remove(
+            `${c.secure ? "https" : "http"}://${(c.domain || "").replace(
+              /^\./,
+              ""
+            )}${c.path || "/"}`,
+            c.name
+          )
+          .catch(() => {})
       )
     );
 
     await Promise.all(
-      cookies.map(c => {
-        const url = `${c.secure ? 'https' : 'http'}://${(c.domain || '').replace(/^\./, '')}${c.path || '/'}`;
+      cookies.map((c) => {
+        const url = `${c.secure ? "https" : "http"}://${(
+          c.domain || ""
+        ).replace(/^\./, "")}${c.path || "/"}`;
         const payload = {
           url,
           name: c.name,
@@ -1204,53 +1419,59 @@ async function cloneCookiesBetweenPartitions(srcPartition, dstPartition) {
           secure: c.secure,
           httpOnly: c.httpOnly,
           expirationDate: c.expirationDate,
-          sameSite: c.sameSite
+          sameSite: c.sameSite,
         };
         return dst.cookies.set(payload).catch(() => {});
       })
     );
   } catch (e) {
-    console.error('Cookie clone failed:', e);
+    console.error("Cookie clone failed:", e);
   }
 }
 
 // ---------- IPC handlers ----------
 
-ipcMain.handle('profiles:get', async () => {
+ipcMain.handle("profiles:get", async () => {
   return readProfiles();
 });
 
-ipcMain.handle('profiles:active', async () => {
+ipcMain.handle("profiles:active", async () => {
   return getActiveProfileNames();
 });
 
-ipcMain.handle('profiles:add', async (_e, payload) => {
+ipcMain.handle("profiles:add", async (_e, payload) => {
   const list = readProfiles();
-  const nameInput = typeof payload === 'string' ? payload : payload?.name;
-  const jobInput = typeof payload === 'object' ? (payload?.job || '') : '';
+  const nameInput = typeof payload === "string" ? payload : payload?.name;
 
   const name = safeProfileName(nameInput);
-  if (!name) return { ok: false, error: 'Enter a valid name' };
-  if (list.some(p => p.name === name)) return { ok: false, error: 'Name already exists' };
+  if (!name) return { ok: false, error: "Enter a valid name" };
+  if (list.some((p) => p.name === name))
+    return { ok: false, error: "Name already exists" };
 
-  const job = JOBS_SET.has((jobInput || '').trim()) ? (jobInput || '').trim() : DEFAULT_JOB;
-
-  const profile = { name, job, savedAuth: {}, partition: partitionForProfile({ name }), frame: true, isClone: false };
+  const profile = {
+    name,
+    server: "live",
+    savedAuth: {},
+    partition: partitionForProfile({ name }),
+    frame: true,
+    isClone: false,
+    // winBounds undefined until first move/resize; defaults used at launch
+  };
   writeProfiles([...list, profile]);
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
   return { ok: true };
 });
 
 // Clone profile: use "Name Copy", "Name Copy 2", ...
-ipcMain.handle('profiles:clone', async (_e, { name }) => {
+ipcMain.handle("profiles:clone", async (_e, { name }) => {
   const list = readProfiles();
-  const src = list.find(p => p.name === name);
-  if (!src) return { ok: false, error: 'Profile not found' };
+  const src = list.find((p) => p.name === name);
+  if (!src) return { ok: false, error: "Profile not found" };
 
   const base = `${src.name} Copy`;
   let newName = base;
   let n = 2;
-  while (list.some(p => p.name === newName)) {
+  while (list.some((p) => p.name === newName)) {
     newName = `${base} ${n++}`;
   }
 
@@ -1259,11 +1480,12 @@ ipcMain.handle('profiles:clone', async (_e, { name }) => {
 
   const cloned = {
     name: targetName,
-    job: src.job || DEFAULT_JOB,
+    server: "live",
     savedAuth: { ...(src.savedAuth || {}) },
     partition: newPartition,
     frame: !!src.frame,
-    isClone: true
+    isClone: true,
+    winBounds: src.winBounds ? { ...src.winBounds } : undefined,
   };
 
   writeProfiles([...list, cloned]);
@@ -1271,17 +1493,18 @@ ipcMain.handle('profiles:clone', async (_e, { name }) => {
   try {
     await cloneCookiesBetweenPartitions(partitionForProfile(src), newPartition);
   } catch (e) {
-    console.error('Failed to clone session cookies:', e);
+    console.error("Failed to clone session cookies:", e);
   }
 
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
   return { ok: true, to: cloned.name };
 });
 
-ipcMain.handle('profiles:reorder', async (_e, orderNames) => {
+ipcMain.handle("profiles:reorder", async (_e, orderNames) => {
   const list = readProfiles();
-  if (!Array.isArray(orderNames) || !orderNames.length) return { ok: false, error: 'Invalid order' };
-  const map = new Map(list.map(p => [p.name, p]));
+  if (!Array.isArray(orderNames) || !orderNames.length)
+    return { ok: false, error: "Invalid order" };
+  const map = new Map(list.map((p) => [p.name, p]));
   const next = [];
   for (const nm of orderNames) {
     if (map.has(nm)) {
@@ -1292,18 +1515,22 @@ ipcMain.handle('profiles:reorder', async (_e, orderNames) => {
   for (const rest of map.values()) next.push(rest);
 
   writeProfiles(next);
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
   return { ok: true };
 });
 
-ipcMain.handle('profiles:update', async (_e, { from, to, frame, job }) => {
+ipcMain.handle("profiles:update", async (_e, { from, to, server, frame }) => {
   const list = readProfiles();
   const idx = getProfileIndex(list, from);
-  if (idx === -1) return { ok: false, error: 'Profile not found' };
+  if (idx === -1) return { ok: false, error: "Profile not found" };
 
   const newName = safeProfileName(to || from);
-  if (!newName) return { ok: false, error: 'Enter a valid name' };
-  if (newName !== from && list.some(p => p.name === newName)) return { ok: false, error: 'Target name already exists' };
+  if (!newName) return { ok: false, error: "Enter a valid name" };
+  if (newName !== from && list.some((p) => p.name === newName))
+    return { ok: false, error: "Target name already exists" };
+
+  const newServer = SERVERS[server] ? server : list[idx].server || "live";
+  const newFrame = typeof frame === "boolean" ? frame : !!list[idx].frame;
 
   if (newName !== from && gameWindows.has(from)) {
     const wins = gameWindows.get(from);
@@ -1311,37 +1538,41 @@ ipcMain.handle('profiles:update', async (_e, { from, to, frame, job }) => {
     gameWindows.set(newName, wins);
     if (wins) {
       for (const w of wins) {
-        try { w.__profileName = newName; } catch {}
+        try {
+          w.__profileName = newName;
+        } catch {}
       }
     }
   }
 
   const oldPartition = list[idx].partition || partitionForProfile(list[idx]);
-  const wasClone = typeof list[idx].isClone === 'boolean' ? list[idx].isClone : inferIsCloneFromName(list[idx].name);
-
-  const nextJob = JOBS_SET.has((job || '').trim()) ? (job || '').trim() : (list[idx].job || DEFAULT_JOB);
+  const wasClone =
+    typeof list[idx].isClone === "boolean"
+      ? list[idx].isClone
+      : inferIsCloneFromName(list[idx].name);
 
   list[idx].name = newName;
+  list[idx].server = newServer; // will always be 'live' in UI
   list[idx].partition = oldPartition;
-  list[idx].frame = (typeof frame === 'boolean') ? frame : !!list[idx].frame;
+  list[idx].frame = newFrame;
   list[idx].isClone = wasClone;
-  list[idx].job = nextJob;
 
   writeProfiles(list);
 
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
   broadcastActiveUpdate();
   return { ok: true };
 });
 
-ipcMain.handle('profiles:rename', async (_e, { from, to }) => {
+ipcMain.handle("profiles:rename", async (_e, { from, to }) => {
   const list = readProfiles();
   const idx = getProfileIndex(list, from);
-  if (idx === -1) return { ok: false, error: 'Profile not found' };
+  if (idx === -1) return { ok: false, error: "Profile not found" };
 
   const newName = safeProfileName(to);
-  if (!newName) return { ok: false, error: 'Enter a valid name' };
-  if (list.some(p => p.name === newName)) return { ok: false, error: 'Target name already exists' };
+  if (!newName) return { ok: false, error: "Enter a valid name" };
+  if (list.some((p) => p.name === newName))
+    return { ok: false, error: "Target name already exists" };
 
   if (gameWindows.has(from)) {
     const wins = gameWindows.get(from);
@@ -1349,13 +1580,18 @@ ipcMain.handle('profiles:rename', async (_e, { from, to }) => {
     gameWindows.set(newName, wins);
     if (wins) {
       for (const w of wins) {
-        try { w.__profileName = newName; } catch {}
+        try {
+          w.__profileName = newName;
+        } catch {}
       }
     }
   }
 
   const oldPartition = list[idx].partition || partitionForProfile(list[idx]);
-  const wasClone = typeof list[idx].isClone === 'boolean' ? list[idx].isClone : inferIsCloneFromName(list[idx].name);
+  const wasClone =
+    typeof list[idx].isClone === "boolean"
+      ? list[idx].isClone
+      : inferIsCloneFromName(list[idx].name);
 
   list[idx].name = newName;
   list[idx].partition = oldPartition;
@@ -1363,27 +1599,40 @@ ipcMain.handle('profiles:rename', async (_e, { from, to }) => {
 
   writeProfiles(list);
 
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
   broadcastActiveUpdate();
   return { ok: true };
 });
 
-ipcMain.handle('profiles:clear-auth', async (_e, name) => {
+ipcMain.handle("profiles:clear-auth", async (_e, name) => {
   const p = getProfileByName(name);
-  if (!p) return { ok: false, error: 'Profile not found' };
+  if (!p) return { ok: false, error: "Profile not found" };
   p.savedAuth = {};
   const ok = saveProfile(p);
-  if (!ok) return { ok: false, error: 'Failed to clear' };
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (!ok) return { ok: false, error: "Failed to clear" };
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
+  return { ok: true };
+});
+
+// Clear saved window bounds for a profile
+ipcMain.handle("profiles:clear-bounds", async (_e, name) => {
+  const list = readProfiles();
+  const idx = getProfileIndex(list, name);
+  if (idx === -1) return { ok: false, error: "Profile not found" };
+  delete list[idx].winBounds;
+  writeProfiles(list);
+  if (launcherWin && !launcherWin.isDestroyed()) {
+    launcherWin.webContents.send("profiles:updated");
+  }
   return { ok: true };
 });
 
 // DELETE PROFILE with restart to complete full folder deletion
 // (STRICT by partition; also removes partition-derived folder name variants)
-ipcMain.handle('profiles:delete', async (_e, { name, clear }) => {
+ipcMain.handle("profiles:delete", async (_e, { name, clear }) => {
   const list = readProfiles();
-  const p = list.find(x => x.name === name);
-  if (!p) return { ok: false, error: 'Profile not found' };
+  const p = list.find((x) => x.name === name);
+  if (!p) return { ok: false, error: "Profile not found" };
   const part = partitionForProfile(p);
 
   // Close any open windows for this profile (force-close without prompt)
@@ -1398,34 +1647,38 @@ ipcMain.handle('profiles:delete', async (_e, { name, clear }) => {
   }
 
   // Remove from profiles.json
-  const next = list.filter(x => x.name !== name);
+  const next = list.filter((x) => x.name !== name);
   writeProfiles(next);
 
   let requiresRestart = false;
 
   // If no other profile shares this partition, nuke its data and directories
-  const remainingRefs = next.filter(x => (x.partition || partitionForProfile(x)) === part).length;
+  const remainingRefs = next.filter(
+    (x) => (x.partition || partitionForProfile(x)) === part
+  ).length;
 
   if (clear && remainingRefs === 0) {
     try {
       const s = session.fromPartition(part);
       await s.clearStorageData({
         storages: [
-          'cookies',
-          'localstorage',
-          'filesystem',
-          'serviceworkers',
-          'cachestorage',
-          'indexeddb',
-          'websql'
-        ]
+          "cookies",
+          "localstorage",
+          "filesystem",
+          "serviceworkers",
+          "cachestorage",
+          "indexeddb",
+          "websql",
+        ],
       });
-      if (typeof s.flushStorageData === 'function') {
-        try { s.flushStorageData(); } catch {}
+      if (typeof s.flushStorageData === "function") {
+        try {
+          s.flushStorageData();
+        } catch {}
       }
       await s.clearCache().catch(() => {});
     } catch (e) {
-      console.error('Failed clearing storage for', name, e);
+      console.error("Failed clearing storage for", name, e);
     }
 
     // Queue deletion for primary, strict legacy, and partition-derived variants
@@ -1435,19 +1688,19 @@ ipcMain.handle('profiles:delete', async (_e, { name, clear }) => {
     for (const dir of legacyDirs) enqueuePendingDelete(dir);
 
     try {
-      const partsRoot = path.join(USER_DATA, 'Partitions');
+      const partsRoot = path.join(USER_DATA, "Partitions");
       for (const base of dirBasesFromPartition(part)) {
         const full = path.join(partsRoot, base);
         enqueuePendingDelete(full);
       }
     } catch (e) {
-      console.error('Enqueue partition-variant dirs failed:', e);
+      console.error("Enqueue partition-variant dirs failed:", e);
     }
 
     requiresRestart = true;
   }
 
-  if (launcherWin) launcherWin.webContents.send('profiles:updated');
+  if (launcherWin) launcherWin.webContents.send("profiles:updated");
   broadcastActiveUpdate();
 
   if (requiresRestart) {
@@ -1459,54 +1712,55 @@ ipcMain.handle('profiles:delete', async (_e, { name, clear }) => {
   return { ok: true, restarting: false };
 });
 
-ipcMain.handle('profiles:clear', async (_e, name) => {
+ipcMain.handle("profiles:clear", async (_e, name) => {
   const p = getProfileByName(name);
-  if (!p) return { ok: false, error: 'Profile not found' };
+  if (!p) return { ok: false, error: "Profile not found" };
   try {
     const s = session.fromPartition(partitionForProfile(p));
     await s.clearStorageData({
       storages: [
-        'cookies',
-        'localstorage',
-        'filesystem',
-        'serviceworkers',
-        'cachestorage',
-        'indexeddb',
-        'websql'
-      ]
+        "cookies",
+        "localstorage",
+        "filesystem",
+        "serviceworkers",
+        "cachestorage",
+        "indexeddb",
+        "websql",
+      ],
     });
-    if (typeof s.flushStorageData === 'function') {
-      try { s.flushStorageData(); } catch {}
+    if (typeof s.flushStorageData === "function") {
+      try {
+        s.flushStorageData();
+      } catch {}
     }
     await s.clearCache().catch(() => {});
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: 'Failed to clear session' };
+    return { ok: false, error: "Failed to clear session" };
   }
 });
 
-ipcMain.handle('profiles:launch', async (_e, name) => {
-  if (launcherWin && !launcherWin.isDestroyed()) {
-    launcherWin.hide();
-  }
+ipcMain.handle("profiles:launch", async (_e, name) => {
   launchGameWithProfile(name);
   return { ok: true };
 });
 
-ipcMain.handle('profiles:quit', async (_e, name) => {
+ipcMain.handle("profiles:quit", async (_e, name) => {
   if (gameWindows.has(name)) {
     for (const w of gameWindows.get(name)) {
-      try { if (!w.isDestroyed()) w.close(); } catch {}
+      try {
+        if (!w.isDestroyed()) w.close();
+      } catch {}
     }
   }
   return { ok: true };
 });
 
-ipcMain.handle('app:quit', () => app.quit());
+ipcMain.handle("app:quit", () => app.quit());
 
 // ---------- App lifecycle ----------
 
-app.on('ready', async () => {
+app.on("ready", async () => {
   if (!fs.existsSync(PROFILES_FILE)) writeProfiles([]);
   // Normalize and migrate partitions (detect strict legacy dirs) on startup
   writeProfiles(readProfiles());
@@ -1519,20 +1773,20 @@ app.on('ready', async () => {
 
   // Optional notify renderer
   if (launcherWin && !launcherWin.isDestroyed()) {
-    launcherWin.webContents.send('app:restarted-cleanup-complete');
+    launcherWin.webContents.send("app:restarted-cleanup-complete");
   }
 });
 
-app.on('will-quit', async () => {
+app.on("will-quit", async () => {
   globalShortcut.unregisterAll();
   await processPendingDeletes().catch(() => {});
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
 });
 
-app.on('activate', () => {
+app.on("activate", () => {
   if (!launcherWin) createLauncher();
   launcherWin.show();
 });
